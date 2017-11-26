@@ -26,13 +26,16 @@ from keras.layers import Dense, GlobalAveragePooling2D, GlobalMaxPooling2D
 from keras.optimizers import SGD, RMSprop
 from keras import backend as K
 from keras.callbacks import TensorBoard
+from keras.utils import multi_gpu_model
+import tensorflow as tf
 import numpy as np
-from . import score_keras
+import score_keras
 
 from datetime import datetime
 import os
 import argparse
 import logging
+from distutils.util import strtobool
 
 FLAGS = None
 
@@ -75,6 +78,7 @@ pooling_types = {
     'none': lambda x: x
 }
 
+
 def build_model_name(options):
     ts = '' if not options.add_timestamp_suffix else datetime.now().strftime('_%Y%m%dT%H%M%S')
     mn = options.model_type
@@ -84,6 +88,7 @@ def build_model_name(options):
     wts = 'wts' if options.use_weights else 'nowts'
     epochs = '-'.join(map(str, options.epochs))
     return '{}_{}_{}_lr{}_{}_e{}{}'.format(mn, topology, af, lrs, wts, epochs, ts)
+
 
 def write_model_desc(options, model_path, model_name, classes, weights, train_gen, cm_path, metrics):
     desc_file = os.path.join(model_path, model_name + '_desc.md')
@@ -118,7 +123,7 @@ def write_model_desc(options, model_path, model_name, classes, weights, train_ge
         for lr, epoch in zip(options.learning_rates[1:], options.epochs[1:]):
             fp.write('- Rate {} for {} epochs'.format(lr, epoch))
         fp.write('\n\n{} training images were used in {} classes.'.format(
-            len(train_gen.classes), train_gen.num_class))
+            len(train_gen.classes), train_gen.num_classes))
         if cm_path or any(metrics):
             fp.write('\n\n# Scoring and Evaluation\n\n')
             if cm_path:
@@ -135,6 +140,7 @@ def write_model_desc(options, model_path, model_name, classes, weights, train_ge
                             fp.write('    - {}: {}\n'.format(classes[idx], vals[idx]))
                     else:
                         fp.write('- {}: {}\n'.format(metric, metrics[metric]))
+
 
 def load_images(img_path, flip, rotate, zoom, shear, batch_size, img_size,
                 seed):
@@ -179,7 +185,8 @@ def train_model(img_path,
                 momentum=0.9,
                 epochs=[5, 5],
                 use_weights=False,
-                seed=1337):
+                seed=1337,
+                gpu=1):
     callbacks = None
     if tf_log_dir:
         # NOTE: Cannot write histograms when using generators as of Keras 2.0.8
@@ -203,7 +210,9 @@ def train_model(img_path,
         for i in range(len(vals)):
             wts[i] = 1. - float(freqs[i]) / tot
     else:
-        wts = dict(zip(range(train_gen.num_class), [1.] * train_gen.num_class))
+        wts = None
+        # wts = dict(
+        # zip(range(train_gen.num_classes), [1.] * train_gen.num_classes))
     logger.info('Using class weights {}'.format(wts))
 
     # Add new dense layers and softmax
@@ -216,8 +225,12 @@ def train_model(img_path,
         else:
             x = Dense(num_nodes)(x)
             x = activation_fn()(x)
-    predictions = Dense(train_gen.num_class, activation='softmax')(x)
-    model = Model(inputs=base_model.input, outputs=predictions)
+    predictions = Dense(train_gen.num_classes, activation='softmax')(x)
+
+    # we'll store a copy of the model on *every* GPU and then combine
+    # the results from the gradient updates on the CPU
+    with tf.device("/cpu:0"):
+        model = Model(inputs=base_model.input, outputs=predictions)
     logger.info(
         'Adding {} dense layers with {} nodes, {} pooling, {} activation.'.
         format(len(dense_layers), dense_layers, pooling, activation))
@@ -227,18 +240,34 @@ def train_model(img_path,
         layer.trainable = False
 
     logger.info('Initial training using LR {}'.format(learning_rates[0]))
-    model.compile(
-        optimizer=RMSprop(lr=learning_rates[0]),
-        loss='categorical_crossentropy')
+    logger.info('Use {} GPUs'.format(gpu))
 
-    model.fit_generator(
-        train_gen,
-        steps_per_epoch=len(train_gen.classes) / batch_size,
-        epochs=epochs[0],
-        validation_data=valid_gen,
-        validation_steps=len(valid_gen.classes) / batch_size,
-        class_weight=wts,
-        callbacks=callbacks)
+    if gpu > 1:
+        gpu_model = multi_gpu_model(model, gpus=gpu)
+        batch_size = batch_size * gpu
+        gpu_model.compile(
+            optimizer=RMSprop(lr=learning_rates[0]),
+            loss='categorical_crossentropy')
+        gpu_model.fit_generator(
+            train_gen,
+            steps_per_epoch=len(train_gen.classes) / batch_size,
+            epochs=epochs[0],
+            validation_data=valid_gen,
+            validation_steps=len(valid_gen.classes) / batch_size,
+            class_weight=wts,
+            callbacks=callbacks)
+    else:
+        model.compile(
+            optimizer=RMSprop(lr=learning_rates[0]),
+            loss='categorical_crossentropy')
+        model.fit_generator(
+            train_gen,
+            steps_per_epoch=len(train_gen.classes) / batch_size,
+            epochs=epochs[0],
+            validation_data=valid_gen,
+            validation_steps=len(valid_gen.classes) / batch_size,
+            class_weight=wts,
+            callbacks=callbacks)
 
     num_to_unfreeze = -1 * (len(dense_layers) + 1)
     for layer in model.layers[:num_to_unfreeze]:
@@ -248,21 +277,37 @@ def train_model(img_path,
 
     for lr, epoch in zip(learning_rates[1:], epochs[1:]):
         logger.info('Training {} epochs using LR {}'.format(epoch, lr))
-        model.compile(
-            optimizer=SGD(lr=lr, momentum=momentum),
-            loss='categorical_crossentropy')
-
-        # we train our model again (this time fine-tuning the top 2 inception blocks
-        # alongside the top Dense layers
-        model.fit_generator(
-            train_gen,
-            steps_per_epoch=len(train_gen.classes) / batch_size,
-            epochs=epoch,
-            validation_data=valid_gen,
-            validation_steps=len(valid_gen.classes) / batch_size,
-            class_weight=wts,
-            callbacks=callbacks)
+        if gpu > 1:
+            gpu_model = multi_gpu_model(model, gpus=gpu)
+            gpu_model.compile(
+                optimizer=SGD(lr=lr, momentum=momentum),
+                loss='categorical_crossentropy')
+            # we train our model again (this time fine-tuning the top 2 inception blocks
+            # alongside the top Dense layers
+            gpu_model.fit_generator(
+                train_gen,
+                steps_per_epoch=len(train_gen.classes) / batch_size,
+                epochs=epoch,
+                validation_data=valid_gen,
+                validation_steps=len(valid_gen.classes) / batch_size,
+                class_weight=wts,
+                callbacks=callbacks)
+        else:
+            model.compile(
+                optimizer=SGD(lr=lr, momentum=momentum),
+                loss='categorical_crossentropy')
+            # we train our model again (this time fine-tuning the top 2 inception blocks
+            # alongside the top Dense layers
+            model.fit_generator(
+                train_gen,
+                steps_per_epoch=len(train_gen.classes) / batch_size,
+                epochs=epoch,
+                validation_data=valid_gen,
+                validation_steps=len(valid_gen.classes) / batch_size,
+                class_weight=wts,
+                callbacks=callbacks)
     return model, wts, train_gen, img_size
+
 
 def evaluate(model_root, model, images, image_size, num_batches, seed):
     imagegen = image.ImageDataGenerator()
@@ -280,6 +325,7 @@ def evaluate(model_root, model, images, image_size, num_batches, seed):
                                          metrics_path, cm_path)
     return classes, cm_path, metrics
 
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
         description=__doc__,
@@ -293,7 +339,7 @@ if __name__ == '__main__':
     )
     parser.add_argument(
         '--flip',
-        type=bool,
+        type=strtobool,
         default=False,
         help=
         'Whether to augment training images with flips (horiz and vert). Defaults to False.'
@@ -340,7 +386,7 @@ if __name__ == '__main__':
     parser.add_argument(
         '--add_timestamp_suffix',
         default=False,
-        type=bool,
+        type=strtobool,
         help='Turn on/off the timestamp suffix on model (and desc, and cm, and metrics). Defaults to False.')
     parser.add_argument(
         '--batch_size',
@@ -390,7 +436,7 @@ if __name__ == '__main__':
     )
     parser.add_argument(
         '--use_weights',
-        type=bool,
+        type=strtobool,
         default=False,
         help='Use class weights relative to frequencies. Defaults to False.')
     parser.add_argument(
@@ -400,7 +446,7 @@ if __name__ == '__main__':
         help='Random seed for directory iteration. Defaults to 1337.')
     parser.add_argument(
         '--score',
-        type=bool,
+        type=strtobool,
         default=False,
         help='Score the model after training using score_keras.')
     parser.add_argument(
@@ -408,6 +454,11 @@ if __name__ == '__main__':
         type=int,
         default=10,
         help='If scoring, how many batches to score.')
+    parser.add_argument(
+        '--gpu',
+        type=int,
+        default=1,
+        help='Number of epochs to use for each training session.')
     FLAGS, _ = parser.parse_known_args()
     if len(FLAGS.learning_rates) != len(FLAGS.epochs):
         raise Exception('Must provide as many LRs as Epochs.')
@@ -430,7 +481,8 @@ if __name__ == '__main__':
         momentum=FLAGS.momentum,
         epochs=FLAGS.epochs,
         use_weights=FLAGS.use_weights,
-        seed=FLAGS.seed)
+        seed=FLAGS.seed,
+        gpu=FLAGS.gpu)
     model_root = os.path.join(FLAGS.model_dir, model_name)
     model_file = model_root + '.h5'
     logger.info('Saving model to {}'.format(model_file))
@@ -439,6 +491,6 @@ if __name__ == '__main__':
     if FLAGS.score:
         logger.info('Model and description saved. Evaluating and scoring.')
         classes, cm_path, metrics = evaluate(model_root, trained_model, FLAGS.image_dir, im_sz,
-                 FLAGS.num_batches_to_score, FLAGS.seed)
-    write_model_desc(FLAGS, FLAGS.model_dir, model_name, classes, weights,
-                     training_data, cm_path, metrics)
+            FLAGS.num_batches_to_score, FLAGS.seed)
+        write_model_desc(FLAGS, FLAGS.model_dir, model_name, classes, weights,
+                         training_data, cm_path, metrics)
