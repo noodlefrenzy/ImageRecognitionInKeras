@@ -492,5 +492,5 @@ if __name__ == '__main__':
         logger.info('Model and description saved. Evaluating and scoring.')
         classes, cm_path, metrics = evaluate(model_root, trained_model, FLAGS.image_dir, im_sz,
             FLAGS.num_batches_to_score, FLAGS.seed)
-        write_model_desc(FLAGS, FLAGS.model_dir, model_name, classes, weights,
-                         training_data, cm_path, metrics)
+    write_model_desc(FLAGS, FLAGS.model_dir, model_name, classes, weights,
+                        training_data, cm_path, metrics)
