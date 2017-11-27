@@ -18,6 +18,7 @@ from keras.applications.inception_v3 import InceptionV3
 from keras.applications.vgg19 import VGG19
 from keras.applications.resnet50 import ResNet50
 from keras.applications.xception import Xception
+from keras.applications.inception_resnet_v2 import InceptionResNetV2
 from keras.layers import Activation
 from keras.layers.advanced_activations import LeakyReLU, PReLU
 from keras.preprocessing import image
@@ -68,6 +69,10 @@ model_types = {
     },
     'Xception': {
         'model': lambda: Xception(weights='imagenet', include_top=False),
+        'img_size': 299
+    },
+    'InceptionResNetV2': {
+        'model': lambda: InceptionResNetV2(weights='imagenet', include_top=False),
         'img_size': 299
     }
 }
