@@ -81,7 +81,7 @@ def create_image_lists(image_dir, testing_percentage, validation_percentage):
             logger.warning(
                 'WARNING: Folder {} has more than {} images. Some images will never be selected.'
                     .format(dir_name, MAX_NUM_IMAGES_PER_CLASS))
-        label_name = re.sub(r'[^a-z0-9]+', ' ', dir_name.lower())
+        label_name = re.sub(r'\W+', ' ', dir_name.lower())
         training_images = []
         testing_images = []
         validation_images = []
@@ -113,6 +113,9 @@ def create_image_lists(image_dir, testing_percentage, validation_percentage):
                 testing_images.append(base_name)
             else:
                 training_images.append(base_name)
+        logger.info('Found {} train, {} test, {} validation images in "{}"'.format(\
+            len(training_images), len(testing_images), len(validation_images), \
+            os.path.join(image_dir, dir_name)))
         result[label_name] = {
             'dir': dir_name,
             'training': training_images,
