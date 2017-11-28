@@ -5,8 +5,8 @@ Uses Transfer Learning from an existing Keras "Application" (see https://keras.i
 - Freeze all layers in the base model
 - Add a new pooling layer (either global max or avg) if asked (see --pooling)
 - Add one or more new dense layers (see --dense_layers) with activation functions (see --activation)
-- Train the model using RMSProp for epochs[0] epochs using learning_rates[0]
-- Then unfreeze the model, and train for len(epochs)-1 additional rounds, for epochs[1:] epochs using SGD and learning_rates[1:] with momentum --momentum.
+- Train the model using an optimizers[0] for epochs[0] epochs using learning_rates[0]
+- Then unfreeze the model, and train for len(epochs)-1 additional rounds, for epochs[1:] epochs using optimizers[1:] and learning_rates[1:].
 - Class weighting may be used (see --use_weights), and if so will weight proportionally to 1. - (# class N / total #).
 
 It then writes the model file to --model_dir using a composite name for all model parameters, and a Markdown description alongsize. You can then use score_keras.py to evaluate the model.
@@ -24,13 +24,16 @@ from keras.layers.advanced_activations import LeakyReLU, PReLU
 from keras.preprocessing import image
 from keras.models import Model
 from keras.layers import Dense, GlobalAveragePooling2D, GlobalMaxPooling2D
-from keras.optimizers import SGD, RMSprop
+from keras.optimizers import SGD, RMSprop, Adagrad, Adadelta, Adam, Adamax, Nadam
 from keras import backend as K
 from keras.callbacks import TensorBoard
 from keras.utils import multi_gpu_model
 import tensorflow as tf
 import numpy as np
-import score_keras
+try:
+    import score_keras
+except:
+    from . import score_keras
 
 from datetime import datetime
 import os
@@ -52,6 +55,16 @@ activations = {
     'selu': 'selu',
     'tanh': 'tanh',
     'softmax': 'softmax'
+}
+
+optimizer_types = {
+    'SGD': lambda lr: SGD(lr=lr), 
+    'RMSprop': lambda lr: RMSprop(lr=lr), 
+    'Adagrad': lambda lr: Adagrad(lr=lr), 
+    'Adadelta': lambda lr: Adadelta(lr=lr), 
+    'Adam': lambda lr: Adam(lr=lr), 
+    'Adamax': lambda lr: Adamax(lr=lr), 
+    'Nadam': lambda lr: Nadam(lr=lr)
 }
 
 model_types = {
@@ -89,10 +102,11 @@ def build_model_name(options):
     mn = options.model_type
     topology = options.pooling + '-' + '-'.join(map(str, options.dense_layers))
     af = options.activation
+    opts = '-'.join(options.optimizers)
     lrs = '-'.join([str(lr)[2:] for lr in options.learning_rates])
     wts = 'wts' if options.use_weights else 'nowts'
     epochs = '-'.join(map(str, options.epochs))
-    return '{}_{}_{}_lr{}_{}_e{}{}'.format(mn, topology, af, lrs, wts, epochs, ts)
+    return '{}_{}_{}_opts-{}_lr{}_{}_e{}{}'.format(mn, topology, af, opts, lrs, wts, epochs, ts)
 
 
 def write_model_desc(options, model_path, model_name, classes, weights, train_gen, cm_path, metrics):
@@ -120,21 +134,22 @@ def write_model_desc(options, model_path, model_name, classes, weights, train_ge
             fp.write('No class weighting was used.\n')
         fp.write('\n\n# Training Details\n\n')
         fp.write(
-            'We go through an initial training with frozen weights for all layers of the base model, using RMSProp with a learning rate of {}, for {} epochs.\n\n'.
-            format(options.learning_rates[0], options.epochs[0]))
+            'We go through an initial training with frozen weights for all layers of the base model, using {} with a learning rate of {}, for {} epochs.\n\n'.
+            format(options.optimizers[0], options.learning_rates[0], options.epochs[0]))
         fp.write(
-            'After that, we unfreeze all layers and retrain {} times, using SGD and the following learning rates/epochs:\n\n'.
+            'After that, we unfreeze all layers and retrain {} times, using the following optimizers/learning rates/epochs:\n\n'.
             format(len(options.epochs) - 1))
-        for lr, epoch in zip(options.learning_rates[1:], options.epochs[1:]):
-            fp.write('- Rate {} for {} epochs'.format(lr, epoch))
+        for opt, lr, epoch \
+                in zip(options.optimizers[1:], options.learning_rates[1:], options.epochs[1:]):
+            fp.write('- Using {} with Learning Rate {} for {} epochs'.format(opt, lr, epoch))
         fp.write('\n\n{} training images were used in {} classes.'.format(
             len(train_gen.classes), train_gen.num_classes))
-        if cm_path or any(metrics):
+        if cm_path or metrics:
             fp.write('\n\n# Scoring and Evaluation\n\n')
             if cm_path:
                 fp.write('### Confusion Matrix:\n\n')
                 fp.write('![Confusion Matrix](./{})\n\n'.format(os.path.basename(cm_path)))
-            if any(metrics):
+            if metrics:
                 fp.write('### Evaluation Metrics (on Test Set)\n\n')
                 for metric in metrics:
                     vals = metrics[metric]
@@ -185,9 +200,9 @@ def train_model(img_path,
                 batch_size=32,
                 pooling='max',
                 dense_layers=[1024],
+                optimizers=['RMSprop', 'SGD'],
                 learning_rates=[0.001, 0.005],
                 activation='relu',
-                momentum=0.9,
                 epochs=[5, 5],
                 use_weights=False,
                 seed=1337,
@@ -216,8 +231,6 @@ def train_model(img_path,
             wts[i] = 1. - float(freqs[i]) / tot
     else:
         wts = None
-        # wts = dict(
-        # zip(range(train_gen.num_classes), [1.] * train_gen.num_classes))
     logger.info('Using class weights {}'.format(wts))
 
     # Add new dense layers and softmax
@@ -244,14 +257,15 @@ def train_model(img_path,
     for layer in base_model.layers:
         layer.trainable = False
 
-    logger.info('Initial training using LR {}'.format(learning_rates[0]))
+    logger.info('Initial training using Optimizer {} and LR {}'.format(\
+        optimizers[0], learning_rates[0]))
     logger.info('Use {} GPUs'.format(gpu))
 
     if gpu > 1:
         gpu_model = multi_gpu_model(model, gpus=gpu)
         batch_size = batch_size * gpu
         gpu_model.compile(
-            optimizer=RMSprop(lr=learning_rates[0]),
+            optimizer=optimizer_types[optimizers[0]](learning_rates[0]),
             loss='categorical_crossentropy')
         gpu_model.fit_generator(
             train_gen,
@@ -263,7 +277,7 @@ def train_model(img_path,
             callbacks=callbacks)
     else:
         model.compile(
-            optimizer=RMSprop(lr=learning_rates[0]),
+            optimizer=optimizer_types[optimizers[0]](learning_rates[0]),
             loss='categorical_crossentropy')
         model.fit_generator(
             train_gen,
@@ -280,12 +294,12 @@ def train_model(img_path,
     for layer in model.layers[num_to_unfreeze:]:
         layer.trainable = True
 
-    for lr, epoch in zip(learning_rates[1:], epochs[1:]):
-        logger.info('Training {} epochs using LR {}'.format(epoch, lr))
+    for optimizer, lr, epoch in zip(optimizers[1:], learning_rates[1:], epochs[1:]):
+        logger.info('Training {} epochs using Optimizer {} and LR {}'.format(epoch, optimizer, lr))
         if gpu > 1:
             gpu_model = multi_gpu_model(model, gpus=gpu)
             gpu_model.compile(
-                optimizer=SGD(lr=lr, momentum=momentum),
+                optimizer=optimizer_types[optimizer](lr),
                 loss='categorical_crossentropy')
             # we train our model again (this time fine-tuning the top 2 inception blocks
             # alongside the top Dense layers
@@ -299,7 +313,7 @@ def train_model(img_path,
                 callbacks=callbacks)
         else:
             model.compile(
-                optimizer=SGD(lr=lr, momentum=momentum),
+                optimizer=optimizer_types[optimizer](lr),
                 loss='categorical_crossentropy')
             # we train our model again (this time fine-tuning the top 2 inception blocks
             # alongside the top Dense layers
@@ -312,7 +326,6 @@ def train_model(img_path,
                 class_weight=wts,
                 callbacks=callbacks)
     return model, wts, train_gen, img_size
-
 
 def evaluate(model_root, model, images, image_size, num_batches, seed):
     imagegen = image.ImageDataGenerator()
@@ -372,10 +385,10 @@ if __name__ == '__main__':
     parser.add_argument(
         '--model_type',
         type=str,
-        default='InceptionV3',
+        default='InceptionResNetV2',
         choices=model_types.keys(),
         help=
-        'Type of pre-trained model to use. See https://keras.io/applications/. Defaults to InceptionV3.')
+        'Type of pre-trained model to use. See https://keras.io/applications/. Defaults to InceptionResNetV2.')
     parser.add_argument(
         '--model_dir',
         type=str,
@@ -421,16 +434,18 @@ if __name__ == '__main__':
         'Activation function to use for additional dense layers. Defaults to relu.'
     )
     parser.add_argument(
+        '--optimizers',
+        type=str,
+        nargs='+',
+        default=['RMSprop', 'SGD'],
+        help='Optimzers to use for training. Defaults to RMSProp for initial training and SGD for subsequent.'
+    )
+    parser.add_argument(
         '--learning_rates',
         type=float,
         nargs='+',
         default=[0.001, 0.005],
         help='Learning rates. Defaults to [0.001, 0.005].')
-    parser.add_argument(
-        '--momentum',
-        type=float,
-        default=0.9,
-        help='Momentum for SGD in subsequent training. Defaults to 0.9.')
     parser.add_argument(
         '--epochs',
         type=int,
@@ -482,8 +497,8 @@ if __name__ == '__main__':
         pooling=FLAGS.pooling,
         activation=FLAGS.activation,
         dense_layers=FLAGS.dense_layers,
+        optimizers=FLAGS.optimizers,
         learning_rates=FLAGS.learning_rates,
-        momentum=FLAGS.momentum,
         epochs=FLAGS.epochs,
         use_weights=FLAGS.use_weights,
         seed=FLAGS.seed,
@@ -493,6 +508,7 @@ if __name__ == '__main__':
     logger.info('Saving model to {}'.format(model_file))
     os.makedirs(os.path.dirname(model_file), exist_ok=True)
     trained_model.save(model_file)
+    classes = cm_path = metrics = None
     if FLAGS.score:
         logger.info('Model and description saved. Evaluating and scoring.')
         classes, cm_path, metrics = evaluate(model_root, trained_model, FLAGS.image_dir, im_sz,
