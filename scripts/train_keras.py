@@ -144,12 +144,12 @@ def write_model_desc(options, model_path, model_name, classes, weights, train_ge
             fp.write('- Using {} with Learning Rate {} for {} epochs'.format(opt, lr, epoch))
         fp.write('\n\n{} training images were used in {} classes.'.format(
             len(train_gen.classes), train_gen.num_classes))
-        if cm_path or any(metrics):
+        if cm_path or metrics:
             fp.write('\n\n# Scoring and Evaluation\n\n')
             if cm_path:
                 fp.write('### Confusion Matrix:\n\n')
                 fp.write('![Confusion Matrix](./{})\n\n'.format(os.path.basename(cm_path)))
-            if any(metrics):
+            if metrics:
                 fp.write('### Evaluation Metrics (on Test Set)\n\n')
                 for metric in metrics:
                     vals = metrics[metric]
@@ -508,6 +508,7 @@ if __name__ == '__main__':
     logger.info('Saving model to {}'.format(model_file))
     os.makedirs(os.path.dirname(model_file), exist_ok=True)
     trained_model.save(model_file)
+    classes = cm_path = metrics = None
     if FLAGS.score:
         logger.info('Model and description saved. Evaluating and scoring.')
         classes, cm_path, metrics = evaluate(model_root, trained_model, FLAGS.image_dir, im_sz,
