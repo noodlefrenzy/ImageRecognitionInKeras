@@ -85,6 +85,7 @@ def create_image_lists(image_dir, testing_percentage, validation_percentage):
         training_images = []
         testing_images = []
         validation_images = []
+        logger.info('Found {} images in "{}"'.format(len(file_list), os.path.join(image_dir, dir_name)))
         for file_name in file_list:
             base_name = os.path.basename(file_name)
             # We want to ignore anything after '_nohash_' in the file name when
