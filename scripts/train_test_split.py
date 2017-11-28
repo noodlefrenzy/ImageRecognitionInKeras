@@ -79,8 +79,9 @@ def create_image_lists(image_dir, testing_percentage, validation_percentage):
             logger.warning('WARNING: Folder has less than 20 images, which may cause issues.')
         elif len(file_list) > MAX_NUM_IMAGES_PER_CLASS:
             logger.warning(
-                'WARNING: Folder {} has more than {} images. Some images will never be selected.'
+                'WARNING: Folder {} has more than {} images. Some images will never be selected. Skipping.'
                     .format(dir_name, MAX_NUM_IMAGES_PER_CLASS))
+            continue
         label_name = re.sub(r'\W+', ' ', dir_name.lower())
         training_images = []
         testing_images = []
