@@ -151,10 +151,10 @@ def write_model_desc(options, model_path, model_name, classes, weights, train_ge
                 fp.write('![Confusion Matrix](./{})\n\n'.format(os.path.basename(cm_path)))
             if metrics:
                 fp.write('### Evaluation Metrics (on Test Set)\n\n')
-                for metric in metrics:
+                for metric in metrics.keys():
                     vals = metrics[metric]
                     # Metric is per-class
-                    if len(vals) == len(classes):
+                    if hasattr(vals, '__iter__') and len(vals) == len(classes):
                         fp.write('- {}:\n'.format(metric))
                         for idx in range(len(vals)):
                             fp.write('    - {}: {}\n'.format(classes[idx], vals[idx]))
@@ -327,6 +327,18 @@ def train_model(img_path,
                 callbacks=callbacks)
     return model, wts, train_gen, img_size
 
+def write_class_map(model_root, train_gen):
+    # Get classes sorted by their value
+    classes = [x[0] for x in sorted(train_gen.class_indices.items(), key=lambda x: x[1])]
+    class_map = model_root + "_classes.csv"
+    try:
+        with open(class_map, 'w', encoding='utf-8') as cmfp:
+            cmfp.write('Class,ID\n')
+            for i, c in enumerate(classes):
+                cmfp.write('"{}",{}\n'.format(c, i))
+    except:
+        logger.warn('Failed to write class map file.')
+
 def evaluate(model_root, model, images, image_size, num_batches, seed):
     imagegen = image.ImageDataGenerator()
     test_gen = image.DirectoryIterator(
@@ -339,8 +351,8 @@ def evaluate(model_root, model, images, image_size, num_batches, seed):
     classes = [x[0] for x in sorted(test_gen.class_indices.items(), key=lambda x: x[1])]
     metrics_path = model_root + "_metrics.csv"
     cm_path = model_root + "_cm.png"
-    metrics = score_keras.evaluate_model(model, test_gen, classes, num_batches,
-                                         metrics_path, cm_path)
+    metrics, _, _ = score_keras.evaluate_model(model, test_gen, classes, num_batches,
+                                               metrics_path, cm_path)
     return classes, cm_path, metrics
 
 
@@ -513,5 +525,6 @@ if __name__ == '__main__':
         logger.info('Model and description saved. Evaluating and scoring.')
         classes, cm_path, metrics = evaluate(model_root, trained_model, FLAGS.image_dir, im_sz,
             FLAGS.num_batches_to_score, FLAGS.seed)
+    write_class_map(model_root, training_data)
     write_model_desc(FLAGS, FLAGS.model_dir, model_name, classes, weights,
                         training_data, cm_path, metrics)
