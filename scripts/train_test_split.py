@@ -83,7 +83,7 @@ def create_image_lists(image_dir, testing_percentage, validation_percentage):
                 'WARNING: Folder {} has more than {} images. Pruning.'
                     .format(dir_name, FLAGS.max_per_file))
             file_list = file_list[:FLAGS.max_per_file]
-        label_name = re.sub(r'[^a-z0-9]+', ' ', dir_name.lower())
+        label_name = re.sub(r'\W+', ' ', dir_name.lower())
         training_images = []
         testing_images = []
         validation_images = []
