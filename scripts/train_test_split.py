@@ -78,16 +78,15 @@ def create_image_lists(image_dir, testing_percentage, validation_percentage):
         if len(file_list) < 20:
             logger.warning('WARNING: Folder has less than 20 images, which may cause issues. Skipping.')
             continue
-        elif len(file_list) > MAX_NUM_IMAGES_PER_CLASS:
+        elif len(file_list) > FLAGS.max_per_file:
             logger.warning(
-                'WARNING: Folder {} has more than {} images. Some images will never be selected. Skipping.'
-                    .format(dir_name, MAX_NUM_IMAGES_PER_CLASS))
-            continue
+                'WARNING: Folder {} has more than {} images. Pruning.'
+                    .format(dir_name, FLAGS.max_per_file))
+            file_list = file_list[:FLAGS.max_per_file]
         label_name = re.sub(r'\W+', ' ', dir_name.lower())
         training_images = []
         testing_images = []
         validation_images = []
-        logger.info('Found {} images in "{}"'.format(len(file_list), os.path.join(image_dir, dir_name)))
         for file_name in file_list:
             base_name = os.path.basename(file_name)
             # We want to ignore anything after '_nohash_' in the file name when
@@ -115,9 +114,6 @@ def create_image_lists(image_dir, testing_percentage, validation_percentage):
                 testing_images.append(base_name)
             else:
                 training_images.append(base_name)
-        logger.info('Found {} train, {} test, {} validation images in "{}"'.format(\
-            len(training_images), len(testing_images), len(validation_images), \
-            os.path.join(image_dir, dir_name)))
         result[label_name] = {
             'dir': dir_name,
             'training': training_images,
@@ -186,5 +182,11 @@ if __name__ == '__main__':
         help='Percentage of images to use in validation.')
     parser.add_argument(
         '--seed', type=float, default=1337, help='Random seed.')
+    parser.add_argument(
+        '--max_per_file',
+        type=int,
+        default=MAX_NUM_IMAGES_PER_CLASS,
+        help='Limit the maximum number of images in a given class'
+    )
     FLAGS, _ = parser.parse_known_args()
     divide_images()
