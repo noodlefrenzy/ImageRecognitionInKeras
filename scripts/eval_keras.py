@@ -30,13 +30,18 @@ def load_model_and_classmap(model_file, class_map_file):
 
     return model, class_map
 
-def evaluate_model(model, img_file, class_map, top_n=3):
+def evaluate_model(model, img_file, class_map, top_n):
     img = image.load_img(img_file, target_size=(299,299))
     imarr = image.img_to_array(img)
     imarr = np.expand_dims(imarr, axis=0) # add zeroth axis of single element for "batch"
     pred = model.predict(imarr)
-    top_idx = len(class_map.keys()) - top_n
-    pred_ordered = np.argpartition(pred, top_idx, axis=1)
+    if top_n > 0:
+        logger.info('Reporting top {} results.'.format(top_n))
+        top_idx = len(class_map.keys()) - top_n
+    else:
+        logger.info('Reporting all results.')
+        top_idx = 0
+    pred_ordered = np.argsort(pred, axis=1)
     best_n_idx = pred_ordered[0][top_idx:]
     return list(zip([class_map[ix] for ix in best_n_idx], \
         pred_ordered[0][top_idx:], pred[0][best_n_idx]))[::-1]
@@ -62,11 +67,10 @@ if __name__ == '__main__':
         required=True,
         help='Image to evaluate, may specify more than one.')
     parser.add_argument(
-        '--top-n',
+        '--top_n',
         type=int,
         default=3,
-        help='Reports the top N results by score.'
-    )
+        help='Reports the top N results by score (0 == all).')
     FLAGS, _ = parser.parse_known_args()
     model_path = os.path.join(FLAGS.model_dir, FLAGS.model_name + ".h5")
     class_map_path = os.path.join(FLAGS.model_dir, FLAGS.model_name + "_classes.csv")
